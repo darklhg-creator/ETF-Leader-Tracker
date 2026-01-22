@@ -6,7 +6,7 @@ from datetime import datetime
 import os
 
 # 디스코드 설정
-IGYEOK_WEBHOOK_URL = "https://discord.com/api/webhooks/1461902939139604684/ZdCdITanTb3sotd8LlCYlJzSYkVLduAsjC6CD2h26X56wXoQRw7NY72kTNzxTI6UE4Pi"
+IGYEOK_WEBHOOK_URL = "https://discord.com/api/webhooks/1463876197027942514/N9wyH6wL3HKmMSFxNjL1nSbjuoc6q0cZ_nNi9iPILmDecmiIzjU9gDAgGKpUV0A_fSzl"
 
 def send_discord_message(content):
     """디스코드 메시지 전송 (2000자 제한 대응)"""
@@ -122,3 +122,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -94,4 +94,152 @@ for ticker in tickers:
         curr_close = ohlcv['종가'].iloc[-1]
         ma20 = ohlcv['종가'].rolling(window=20).mean().iloc[-1]
         
-        # [2] 이격
+        # [2] 이격도 체크 (공통 조건)
+        if ma20 == 0: continue
+        disparity = (curr_close / ma20) * 100
+        if disparity > DISPARITY_LIMIT: continue # 95% 초과면 탈락 (안 쌈)
+
+        recent_data = ohlcv.iloc[-(CHECK_DAYS+1):]
+
+        # ---------------------------------------------------------
+        # [3] 티어 분류 로직 (강한 조건 B부터 체크)
+        # ---------------------------------------------------------
+        is_tier1 = False
+        trigger_date_b = ""
+        
+        # 역순 탐색
+        for i in range(len(recent_data)-1, 0, -1):
+            curr_row = recent_data.iloc[i]
+            prev_row = recent_data.iloc[i-1]
+            if prev_row['종가'] == 0 or prev_row['거래량'] == 0: continue
+
+            rise = (curr_row['고가'] - prev_row['종가']) / prev_row['종가'] * 100
+            vol_rate = curr_row['거래량'] / prev_row['거래량']
+
+            # B 조건 체크 (강력형)
+            if rise >= COND_B_PRICE and vol_rate >= COND_B_VOL:
+                # 눌림목(침묵) 확인
+                check_range = recent_data.iloc[i+1:]
+                if len(check_range) == 0: continue
+                
+                trigger_vol = curr_row['거래량']
+                is_quiet = True
+                for vol in check_range['거래량']:
+                    if vol > (trigger_vol * QUIET_VOL_RATIO):
+                        is_quiet = False; break
+                
+                if is_quiet:
+                    is_tier1 = True
+                    trigger_date_b = recent_data.index[i].strftime("%Y-%m-%d")
+                    
+                    # 수급 확인
+                    s_start = (datetime.strptime(TARGET_DATE, "%Y%m%d") - timedelta(days=7)).strftime("%Y%m%d")
+                    try:
+                        supply = stock.get_market_net_purchases_of_equities_by_date(s_start, TARGET_DATE, ticker)
+                        inst = int(supply.tail(5)['기관합계'].sum())
+                        fore = int(supply.tail(5)['외국인'].sum())
+                    except:
+                        inst = 0
+                        fore = 0
+                    
+                    name = stock.get_market_ticker_name(ticker)
+                    tier1_results.append({
+                        '종목명': name, '현재가': curr_close, '이격도': round(disparity,1),
+                        '기준일': trigger_date_b, '기관': inst, '외인': fore
+                    })
+                    break 
+
+        if is_tier1: continue # 1티어 선정 시 다음 종목으로
+
+        # ---------------------------------------------------------
+        # B 조건 만족 안 했으면 -> A조건(일반형) 체크
+        # ---------------------------------------------------------
+        for i in range(len(recent_data)-1, 0, -1):
+            curr_row = recent_data.iloc[i]
+            prev_row = recent_data.iloc[i-1]
+            if prev_row['종가'] == 0 or prev_row['거래량'] == 0: continue
+
+            rise = (curr_row['고가'] - prev_row['종가']) / prev_row['종가'] * 100
+            vol_rate = curr_row['거래량'] / prev_row['거래량']
+
+            # A 조건 체크
+            if rise >= COND_A_PRICE and vol_rate >= COND_A_VOL:
+                check_range = recent_data.iloc[i+1:]
+                if len(check_range) == 0: continue
+                
+                trigger_vol = curr_row['거래량']
+                is_quiet = True
+                for vol in check_range['거래량']:
+                    if vol > (trigger_vol * QUIET_VOL_RATIO):
+                        is_quiet = False; break
+                
+                if is_quiet:
+                    # 수급 확인
+                    s_start = (datetime.strptime(TARGET_DATE, "%Y%m%d") - timedelta(days=7)).strftime("%Y%m%d")
+                    try:
+                        supply = stock.get_market_net_purchases_of_equities_by_date(s_start, TARGET_DATE, ticker)
+                        inst = int(supply.tail(5)['기관합계'].sum())
+                        fore = int(supply.tail(5)['외국인'].sum())
+                    except:
+                        inst = 0
+                        fore = 0
+                    
+                    name = stock.get_market_ticker_name(ticker)
+                    tier2_results.append({
+                        '종목명': name, '현재가': curr_close, '이격도': round(disparity,1),
+                        '기준일': recent_data.index[i].strftime("%Y-%m-%d"), '기관': inst, '외인': fore
+                    })
+                    break 
+
+    except: continue
+
+# ==========================================
+# 결과 전송
+# ==========================================
+print("\n" + "="*70)
+print(f"📊 분석 완료. 1티어({len(tier1_results)}개), 2티어({len(tier2_results)}개) 발견.")
+
+msg = f"## 🚀 {TARGET_DATE} 차트 올인 검색 (실적무관)\n"
+msg += f"**조건:** 이격도95↓ | 침묵(50%↓) | 실적 조건 OFF\n\n"
+
+# [1티어 결과]
+if len(tier1_results) > 0:
+    df1 = pd.DataFrame(tier1_results).sort_values(by='이격도', ascending=True)
+    msg += f"### 🔥 [1티어] 강력 세력주 (15%↑ / 300%↑)\n"
+    for _, row in df1.iterrows():
+        icon = "✅"
+        if row['기관'] > 0 and row['외인'] > 0: icon = "👑(쌍끌이)"
+        elif row['기관'] > 0: icon = "🔴(기관)"
+        elif row['외인'] > 0: icon = "🔵(외인)"
+        
+        msg += (f"**{row['종목명']}** {icon}\n"
+                f"> {row['현재가']:,}원 (이격도 {row['이격도']}%)\n"
+                f"> {row['기준일']} 폭발\n\n")
+else:
+    msg += f"### 🔥 [1티어] 강력 세력주\n검색된 종목 없음\n\n"
+
+msg += "-"*20 + "\n\n"
+
+# [2티어 결과]
+if len(tier2_results) > 0:
+    df2 = pd.DataFrame(tier2_results).sort_values(by='이격도', ascending=True)
+    msg += f"### 🛡️ [2티어] 일반 눌림목 (10%↑ / 200%↑)\n"
+    # 너무 많으면 상위 15개만
+    for _, row in df2.head(15).iterrows():
+        icon = ""
+        if row['기관'] > 0: icon = "🔴"
+        
+        msg += (f"**{row['종목명']}** {icon}\n"
+                f"> {row['현재가']:,}원 (이격도 {row['이격도']}%)\n"
+                f"> {row['기준일']} 기준봉\n\n")
+    if len(df2) > 15:
+        msg += f"*외 {len(df2)-15}개 종목 추가 검색됨*"
+else:
+    msg += f"### 🛡️ [2티어] 일반 눌림목\n검색된 종목 없음\n"
+            # --- 요청하신 체크리스트 문구 추가 ---
+            report += "1.영업이익 적자기업 제외하고 테마별로 표로 분류하고 \n"
+            report += "2.수급이랑 최근일주일간 뉴스정리\n"
+            report += "3.테마 수급 영업이익전망으로 최종 종목정리\n"
+            # -----------------------------------
+send_discord_message(DISCORD_WEBHOOK_URL, msg)
+print("✅ 디스코드 전송 완료!")

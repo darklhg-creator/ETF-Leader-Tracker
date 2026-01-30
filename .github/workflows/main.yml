@@ -1,4 +1,4 @@
-name: Stock Analysis Workflow
+name: Stock Analysis Workflow2
 
 on:
   workflow_dispatch:
@@ -25,4 +25,5 @@ jobs:
           
       - name: Run Analysis
         run: python start.py
+
 

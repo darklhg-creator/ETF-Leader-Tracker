@@ -53,9 +53,8 @@ def check_turnaround_trend(ticker, name, start_date, end_date):
                 
                 # 추세선 지지 확인
                 if expected_price * 0.99 <= current_close <= expected_price * 1.05:
-                    # [추가] 흑자 여부 재확인 (적자 종목인 샤페론, 이노스페이스, 가온그룹 등 수동 제외 리스트 운영 가능)
-                    # 실제 환경에서는 재무 API 연동이 좋으나 우선은 패턴 분석 후 필터링
-                    bad_list = ['샤페론', '이노스페이스', '가온그룹', '제이엘케이'] # 알려진 적자 종목 예시
+    
+                    bad_list = [] # 알려진 적자 종목 예시
                     if name in bad_list: return None
 
                     low_dates = [df.index[i].strftime("%m/%d") for i in recent_idx]
@@ -110,3 +109,4 @@ if __name__ == "__main__":
     # 요청하신 3줄 문구 추가
     footer = "\n1.적자기업 제외하고 테마 구분\n2.최근 일주일간 수급및 뉴스 확인\n3.최종종목 선정"
     send_discord_message(msg + footer)
+

@@ -5,7 +5,6 @@ import time
 from datetime import datetime, timedelta
 import requests
 
-# 1. 주변 캔들 대비 저점을 찾는 함수
 def get_local_minima(series, order=5):
     minima_indices = []
     for i in range(order, len(series) - order):
@@ -14,12 +13,16 @@ def get_local_minima(series, order=5):
             minima_indices.append(i)
     return minima_indices
 
-# 2. 저점 정렬도 및 추세선 지지 확인 함수
 def check_linear_trend(ticker, name, start_date, end_date):
     try:
         df = stock.get_market_ohlcv_by_date(fromdate=start_date, todate=end_date, ticker=ticker)
         if len(df) < 30: return None
 
+        # 1. 20일선 이격도 계산 (종가 기준)
+        ma20 = df['종가'].rolling(window=20).mean()
+        curr_disparity_20 = round((df['종가'].iloc[-1] / ma20.iloc[-1]) * 100, 1)
+
+        # 2. 저점(저가) 기반 추세선 분석
         low_values = df['저가'].values
         low_idx = get_local_minima(low_values, order=5)
         if len(low_idx) > 0 and low_idx[-1] == len(df) - 1: low_idx = low_idx[:-1]
@@ -27,86 +30,68 @@ def check_linear_trend(ticker, name, start_date, end_date):
         if len(low_idx) >= 3:
             recent_x = np.array(low_idx[-3:])
             recent_y = low_values[recent_x]
+            
+            # 저점 상승 확인
             if not (recent_y[0] < recent_y[1] < recent_y[2]): return None
 
+            # R2 신뢰도 계산
             coeffs = np.polyfit(recent_x, recent_y, 1)
             p = np.poly1d(coeffs)
             y_hat = p(recent_x); y_bar = np.mean(recent_y)
             ss_res = np.sum((recent_y - y_hat)**2); ss_tot = np.sum((recent_y - y_bar)**2)
             r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
-            
             if r_squared < 0.85: return None
 
-            today_idx = len(df) - 1; expected_price = p(today_idx)
+            # 추세선 지지 확인
+            today_idx = len(df) - 1
+            expected_price = p(today_idx)
             current_close = df['종가'].iloc[-1]
-            lower_limit = expected_price * 0.99; upper_limit = expected_price * 1.05
+            if not (expected_price * 0.99 <= current_close <= expected_price * 1.05): return None
 
-            if lower_limit <= current_close <= upper_limit:
-                diff_rate = ((current_close - expected_price) / expected_price) * 100
-                return {
-                    "종목명": name, "현재가": int(current_close), 
-                    "신뢰도(R2)": round(r_squared, 3), "이격률(%)": round(diff_rate, 2)
-                }
+            # 3. 저점 날짜 포맷팅 (MM/DD)
+            low_dates = [df.index[i].strftime("%m/%d") for i in recent_x]
+
+            return {
+                "종목명": name,
+                "1차저점": low_dates[0],
+                "2차저점": low_dates[1],
+                "3차저점": low_dates[2],
+                "이격도": curr_disparity_20
+            }
     except: pass
     return None
 
-# 3. 시장 개장 여부 확인 함수
 def is_market_open():
     now = datetime.now()
     if now.weekday() >= 5: return False
     target_date = now.strftime("%Y%m%d")
     try:
         df = stock.get_market_ohlcv_by_date(target_date, target_date, "005930")
-        if df.empty: return False
+        return not df.empty
     except: return False
-    return True
-
-def get_top_tickers(market_name, count):
-    now = datetime.now()
-    target_date = now.strftime("%Y%m%d")
-    df = stock.get_market_cap_by_ticker(target_date, market=market_name)
-    while df.empty:
-        now -= timedelta(days=1)
-        target_date = now.strftime("%Y%m%d")
-        df = stock.get_market_cap_by_ticker(target_date, market=market_name)
-    return df.sort_values(by='시가총액', ascending=False).head(count).index
 
 def send_discord_message(content):
     webhook_url = "https://discord.com/api/webhooks/1466732864392397037/roekkL5WS9fh8uQnm6Bjcul4C8MDo1gsr1ZmzGh8GfuomzlJ5vpZdVbCaY--_MZOykQ4"
-    payload = {"content": content}
-    requests.post(webhook_url, json=payload)
+    requests.post(webhook_url, json={"content": content})
 
 if __name__ == "__main__":
-    if not is_market_open():
-        print("오늘은 시장이 열리지 않는 날입니다.")
-        exit()
+    if not is_market_open(): exit()
 
     now = datetime.now()
-    end_date = now.strftime("%Y%m%d")
-    start_date = (now - timedelta(days=90)).strftime("%Y%m%d")
+    all_targets = list(stock.get_market_cap_by_ticker(now.strftime("%Y%m%d"), market="KOSPI").sort_values(by='시가총액', ascending=False).head(500).index) + \
+                  list(stock.get_market_cap_by_ticker(now.strftime("%Y%m%d"), market="KOSDAQ").sort_values(by='시가총액', ascending=False).head(1000).index)
     
-    print(f"🔍 분석 시작: {start_date} ~ {end_date}")
-    
-    kospi = list(get_top_tickers("KOSPI", 500))
-    kosdaq = list(get_top_tickers("KOSDAQ", 1000))
-    all_targets = kospi + kosdaq
-    
-    results = [] # 여기서 변수를 미리 선언해주어야 에러가 나지 않습니다!
-    
-    for i, ticker in enumerate(all_targets):
+    results = []
+    for ticker in all_targets:
         name = stock.get_market_ticker_name(ticker)
-        res = check_linear_trend(ticker, name, start_date, end_date)
-        if res:
-            results.append(res)
-            print(f"✅ 포착: {name}")
-        if (i + 1) % 200 == 0: print(f"⏳ 진행 중... ({i+1}/{len(all_targets)})")
+        res = check_linear_trend(ticker, name, (now - timedelta(days=120)).strftime("%Y%m%d"), now.strftime("%Y%m%d"))
+        if res: results.append(res)
         time.sleep(0.02)
 
     if results:
-        final_df = pd.DataFrame(results).sort_values(by='이격률(%)')
-        msg = f"📅 {datetime.now().strftime('%Y-%m-%d')} [이효근표] 추세선 지지 종목\n```\n{final_df.to_string(index=False)}\n```"
+        final_df = pd.DataFrame(results).sort_values(by='이격도', ascending=False)
+        msg = f"📅 {now.strftime('%Y-%m-%d')} 분석 결과\n```\n{final_df.to_string(index=False)}\n```"
     else:
-        msg = f"📅 {datetime.now().strftime('%Y-%m-%d')} 분석 결과: 조건에 맞는 종목이 없습니다."
+        msg = f"📅 {now.strftime('%Y-%m-%d')} 포착된 종목이 없습니다."
     
     send_discord_message(msg)
-    print("🚀 디스코드 전송 완료!")

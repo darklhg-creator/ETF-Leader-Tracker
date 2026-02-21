@@ -28,8 +28,8 @@ def main():
     print(f"📅 실행일시: {today_dt.strftime('%Y-%m-%d %H:%M:%S')} (KST)")
 
     # 2. [핵심] 주말 및 공휴일(휴장일) 체크
-    # pykrx의 영업일 데이터를 조회하여 오늘 날짜가 없으면 휴장일로 판단합니다.
-    b_days = stock.get_business_days_dates(target_date, target_date)
+    # 에러 수정됨: get_business_days_dates -> get_business_days
+    b_days = stock.get_business_days(target_date, target_date)
     if len(b_days) == 0:
         print("💤 오늘은 주말이거나 공휴일(휴장일)입니다. 탐색을 건너뜁니다.")
         return # 프로그램 종료
@@ -113,5 +113,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

@@ -8,7 +8,6 @@ from datetime import datetime, timedelta, timezone
 # ==========================================
 WEBHOOK_URL = "https://discord.com/api/webhooks/1466732864392397037/roekkL5WS9fh8uQnm6Bjcul4C8MDo1gsr1ZmzGh8GfuomzlJ5vpZdVbCaY--_MZOykQ4"
 
-# 순수 국내 섹터만 남기기 위한 강력한 필터링 키워드
 EXCLUDE_KEYWORDS = [
     '미국', '차이나', '중국', '일본', '나스닥', 'S&P', '글로벌', 'MSCI', '인도', '베트남', 
     '필라델피아', '레버리지', '인버스', '블룸버그', '항셍', '니케이', '빅테크', 'TSMC', 
@@ -24,49 +23,62 @@ class ETFTracker:
         self.df = pd.DataFrame()
 
     def fetch_data(self):
-        """거래소(KRX)에서 하루치 ETF 변동 데이터를 한 번에 가져옵니다."""
-        print(f"📡 [{self.target_date}] 데이터 수집 시작...")
-        # get_market_price_change는 거래소가 공인한 시/고/저/종/등락률/거래대금을 완벽히 제공합니다.
-        self.df = stock.get_market_price_change(self.target_date, self.target_date, "ETF")
+        # 1. 영업일 목록 조회하여 오늘과 직전 거래일 정확히 찾기
+        dt_end = datetime.strptime(self.target_date, "%Y%m%d")
+        dt_start = dt_end - timedelta(days=10)
         
-        if self.df.empty:
-            raise ValueError("데이터가 없습니다. 휴장일이거나 데이터 집계 전입니다.")
+        b_days = stock.get_business_days_dates(dt_start.strftime("%Y%m%d"), self.target_date)
         
-        print(f"✅ 수집 완료 (총 {len(self.df)}개 종목)")
-
+        if len(b_days) < 2:
+            raise ValueError("영업일 데이터가 부족합니다.")
+            
+        curr_date = b_days[-1].strftime("%Y%m%d")
+        prev_date = b_days[-2].strftime("%Y%m%d")
+        
+        print(f"📡 수집 기준일: {curr_date} / 비교일(전일): {prev_date}")
+        
+        # 2. 오늘과 전일의 시세 데이터를 각각 통째로 수집 (등락률이 없어도 OK)
+        df_curr = stock.get_etf_ohlcv_by_ticker(curr_date)
+        df_prev = stock.get_etf_ohlcv_by_ticker(prev_date)
+        
+        if df_curr.empty or df_prev.empty:
+            raise ValueError("데이터를 불러오지 못했습니다.")
+            
+        # 3. Pandas Join 연산을 통한 고속 병합 및 자체 등락률 계산
+        # 인덱스(티커) 기준으로 두 데이터를 완벽하게 매칭시켜 숫자가 꼬이지 않음
+        df_merged = df_curr[['종가', '거래대금']].join(df_prev[['종가']], lsuffix='_현재', rsuffix='_전일')
+        
+        # 자체 계산식: ((오늘종가 - 어제종가) / 어제종가) * 100
+        df_merged['등락률'] = ((df_merged['종가_현재'] - df_merged['종가_전일']) / df_merged['종가_전일']) * 100
+        
+        # 4. 종목명 추가
+        df_merged['종목명'] = [stock.get_etf_ticker_name(t) for t in df_merged.index]
+        
+        self.df = df_merged
+        print(f"✅ 수집 및 연산 완료 (총 {len(self.df)}개 종목)")
+        
     def process_data(self):
-        """데이터 정제 및 필터링 (속도와 안정성을 위한 Pandas 벡터 연산)"""
         df = self.df.copy()
         
-        # 1. 컬럼명 유연성 확보 (오류 원인 완벽 차단)
-        cols = df.columns.tolist()
-        rate_col = next((c for c in cols if '등락' in c), '등락률')
-        amt_col = next((c for c in cols if '대금' in c), '거래대금')
-        name_col = next((c for c in cols if '종목명' in c), '종목명')
-
-        if name_col not in df.columns:
-            df[name_col] = [stock.get_etf_ticker_name(ticker) for ticker in df.index]
-
-        # 2. 제외 키워드 필터링 (for문 대신 정규표현식 사용으로 속도 최적화)
+        # 1. 제외 키워드 필터링 (고속 문자열 연산)
         pattern = '|'.join(EXCLUDE_KEYWORDS)
-        df = df[~df[name_col].str.contains(pattern, na=False)]
-
-        # 3. 데이터 형변환 및 오류값(NaN) 제거
-        df[rate_col] = pd.to_numeric(df[rate_col], errors='coerce').fillna(0)
-        df[amt_col] = pd.to_numeric(df[amt_col], errors='coerce').fillna(0)
-
-        # 4. 등락률 0% 초과 종목만 추출 후 정렬
-        top10_df = df[df[rate_col] > 0].sort_values(by=rate_col, ascending=False).head(10)
-
-        # 5. 깔끔한 출력을 위한 리스트 조립
+        df = df[~df['종목명'].str.contains(pattern, na=False)]
+        
+        # 2. 신규 상장 등으로 전일 데이터가 없어 등락률이 NaN인 종목 제거
+        df = df.dropna()
+        
+        # 3. 상승률 0% 초과 종목만 필터링 후 정렬
+        top10_df = df[df['등락률'] > 0].sort_values(by='등락률', ascending=False).head(10)
+        
+        # 4. 깔끔한 출력을 위한 리스트 조립
         results = []
         for _, row in top10_df.iterrows():
             results.append({
-                '종목명': row[name_col],
-                '상승률(%)': float(row[rate_col]),
-                '거래대금(억)': round(float(row[amt_col]) / 100_000_000, 1)
+                '종목명': row['종목명'],
+                '상승률(%)': float(row['등락률']),
+                '거래대금(억)': round(float(row['거래대금_현재']) / 100_000_000, 1)
             })
-
+            
         return pd.DataFrame(results)
 
 # ==========================================
@@ -83,6 +95,7 @@ def send_discord(df_result, target_date):
         msg += "```text\n"
         msg += df_display.to_string(index=False) + "\n"
         msg += "```\n"
+        msg += "💡 Pandas 자체 병합 연산을 적용하여 정확도와 속도를 극대화했습니다."
 
     try:
         requests.post(WEBHOOK_URL, json={"content": msg})
@@ -94,7 +107,6 @@ def main():
     KST = timezone(timedelta(hours=9))
     today = datetime.now(KST)
     
-    # 주말 작동 방지 로직
     if today.weekday() >= 5:
         print("💤 주말입니다. 분석을 쉬어갑니다.")
         return
@@ -115,7 +127,6 @@ def main():
     except Exception as e:
         error_msg = f"❌ 시스템 에러: {e}"
         print(error_msg)
-        # 치명적 에러 발생 시 디스코드로 즉시 알림 전송
         requests.post(WEBHOOK_URL, json={"content": error_msg}) 
 
 if __name__ == "__main__":

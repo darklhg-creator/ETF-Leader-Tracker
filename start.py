@@ -3,7 +3,7 @@ from pykrx import stock
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 
-# 🔴 디스코드 웹후크 URL (사용하시는 URL로 확인해 주세요)
+# 🔴 디스코드 웹후크 URL
 WEBHOOK_URL = "https://discord.com/api/webhooks/1466732864392397037/roekkL5WS9fh8uQnm6Bjcul4C8MDo1gsr1ZmzGh8GfuomzlJ5vpZdVbCaY--_MZOykQ4"
 
 def send_discord_message(msg_content):
@@ -29,10 +29,9 @@ def main():
         df_today = stock.get_etf_ohlcv_by_ticker(target_date)
         
         if df_today.empty:
-            send_discord_message(f"⚠️ [{target_date}] 데이터를 불러올 수 없습니다. (휴장일 또는 데이터 미업데이트)")
+            send_discord_message(f"⚠️ [{target_date}] 데이터를 불러올 수 없습니다. 장마감 데이터 집계 중일 수 있습니다.")
             return
 
-        # 2. 제외 필터 (해외/채권/인버스 등 순수 국내 섹터가 아닌 것들)
         exclude_filters = [
             '미국', '차이나', '중국', '일본', '나스닥', 'S&P', '글로벌', 'MSCI', '인도', '베트남', 
             '필라델피아', '레버리지', '인버스', '블룸버그', '항셍', '니케이', '빅테크', 'TSMC', 
@@ -41,40 +40,48 @@ def main():
         
         results = []
         
-        # 3. 데이터 수집 및 이름 필터링
         for ticker, row in df_today.iterrows():
             name = stock.get_etf_ticker_name(ticker)
-            
-            # 필터링 키워드 포함 시 제외
             if any(word in name for word in exclude_filters): continue
+            
+            # [수정] 컬럼명 대신 위치(iloc)로 안전하게 데이터 추출
+            # 보통 pykrx ETF OHLCV의 등락률은 마지막에서 두 번째 혹은 특정 위치에 있습니다.
+            try:
+                # 등락률 컬럼이 있으면 사용, 없으면 직접 계산하거나 위치로 시도
+                change_rate = row['등락률'] if '등락률' in df_today.columns else row.iloc[-2]
+                trading_amt = row['거래대금'] if '거래대금' in df_today.columns else row.iloc[-1]
+            except:
+                continue
             
             results.append({
                 '종목명': name,
-                '상승률': row['등락률'],
-                '거래대금(억)': round(row['거래대금'] / 100_000_000, 1)
+                '상승률': float(change_rate),
+                '거래대금(억)': round(float(trading_amt) / 100_000_000, 1)
             })
 
-        # 4. 상승률 기준 정렬 및 상위 10개 추출
         if results:
+            # 2. 상승률 기준 정렬 및 상위 10개
             final_df = pd.DataFrame(results).sort_values(by='상승률', ascending=False).head(10)
             
-            # 상승률 표시 포맷 변경 (예: 5.23%)
+            # 출력용 포맷팅
             final_df['상승률'] = final_df['상승률'].map(lambda x: f"{x:.2f}%")
 
-            # 디스코드 메시지 포맷팅
             discord_msg = f"🚀 **[오늘의 국내 ETF 상승률 TOP 10]** ({today_dt.strftime('%Y-%m-%d')})\n"
             discord_msg += "```text\n"
             discord_msg += final_df.to_string(index=False) + "\n"
             discord_msg += "```\n"
-            discord_msg += "💡 오늘 가장 강했던 섹터들입니다. 구성 종목을 확인해 보세요!"
+            discord_msg += "💡 국내 순수 섹터 중 가장 탄력이 좋았던 종목들입니다."
             
             send_discord_message(discord_msg)
-            print(final_df)
         else:
-            send_discord_message(f"🔍 [{target_date}] 조건에 맞는 상승 종목이 없습니다.")
+            print("결과가 없습니다.")
 
     except Exception as e:
-        print(f"❌ 오류 발생: {e}")
+        # 에러 발생 시 상세 정보 출력
+        error_msg = f"❌ 오류 발생: {e}"
+        print(error_msg)
+        # 에러 내용도 디코로 보내서 바로 확인할 수 있게 함
+        # send_discord_message(error_msg) 
 
 if __name__ == "__main__":
     main()

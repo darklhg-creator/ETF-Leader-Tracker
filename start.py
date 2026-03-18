@@ -14,18 +14,18 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ──────────────────────────────────────────
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1466732864392397037/roekkL5WS9fh8uQnm6Bjcul4C8MDo1gsr1ZmzGh8GfuomzlJ5vpZdVbCaY--_MZOykQ4"
 
-DISPARITY_MIN   = 100.0
-DISPARITY_MAX   = 103.0
-MA_PERIOD       = 20
-MACD_FAST       = 12
-MACD_SLOW       = 26
-MACD_SIGNAL     = 9
-ADX_PERIOD      = 14
-ADX_MIN         = 25
-ADX_RISING_DAYS = 3
-MIN_VOLUME_20D  = 100_000
-MAX_WORKERS     = 5
-DATA_PERIOD     = 120
+DISPARITY_MIN       = 100.0
+DISPARITY_MAX       = 103.0
+MA_PERIOD           = 20
+MACD_FAST           = 12
+MACD_SLOW           = 26
+MACD_SIGNAL         = 9
+ADX_PERIOD          = 14
+ADX_MIN             = 25
+ADX_RISING_DAYS     = 3
+MIN_VOLUME_20D      = 100_000
+MAX_WORKERS         = 5
+DATA_PERIOD         = 120
 GOLDEN_CROSS_WINDOW = 3
 
 # ──────────────────────────────────────────
@@ -142,13 +142,16 @@ def analyze_ticker(ticker: str, name: str):
         low    = df["Low"].astype(float)
         volume = df["Volume"].astype(float)
 
+        # 거래량 필터
         if volume.iloc[-20:].mean() < MIN_VOLUME_20D:
             return None
 
+        # MACD 계산
         macd, signal = calc_macd(close)
         if len(macd) < GOLDEN_CROSS_WINDOW + 2:
             return None
 
+        # 최근 N일 이내 골든크로스 확인
         golden_cross_found = False
         for i in range(1, GOLDEN_CROSS_WINDOW + 1):
             if len(macd) < i + 2:
@@ -159,8 +162,13 @@ def analyze_ticker(ticker: str, name: str):
         if not golden_cross_found:
             return None
 
+        # MACD 0선 위에 있어야 통과 (음수 골든크로스 제거)
+        if macd.iloc[-1] <= 0:
+            return None
+
         golden_cross_today = (macd.iloc[-2] <= signal.iloc[-2] and macd.iloc[-1] > signal.iloc[-1])
 
+        # DMI / ADX
         pdi, mdi, adx = calc_dmi_adx(high, low, close)
         if len(adx) < ADX_RISING_DAYS + 1:
             return None
@@ -176,6 +184,7 @@ def analyze_ticker(ticker: str, name: str):
         if not all(adx.iloc[-i] > adx.iloc[-i-1] for i in range(1, ADX_RISING_DAYS + 1)):
             return None
 
+        # 이격도
         if len(close) < MA_PERIOD:
             return None
         disparity = calc_disparity(close)
@@ -216,7 +225,7 @@ def format_discord_message(results: list) -> list:
     header = (
         f"📈 **추세 모멘텀 전략 알림** | {today}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"조건: MACD골든크로스(3일이내) + PDI>MDI + ADX≥{ADX_MIN}(상승) + 이격도 {DISPARITY_MIN}~{DISPARITY_MAX}%\n"
+        f"조건: MACD골든크로스(3일이내,0선위) + PDI>MDI + ADX≥{ADX_MIN}(상승) + 이격도 {DISPARITY_MIN}~{DISPARITY_MAX}%\n"
         f"총 {len(results)}개 종목 발견\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
     )
